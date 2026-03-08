@@ -6,7 +6,10 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from models import UpdateCreate, UpdateResponse, DigestResponse
-from engine import init_db, post_update, list_updates, get_digest, set_team_members
+from engine import (
+    init_db, post_update, list_updates, get_digest,
+    set_team_members, get_team_members, get_streak,
+)
 
 DB_PATH = "standupflow.db"
 
@@ -26,7 +29,7 @@ app = FastAPI(
         "Each engineer posts: what they did, what's next, any blockers. "
         "Get a daily digest per team — no meetings required."
     ),
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -64,9 +67,22 @@ async def daily_digest(
 
 @app.put("/teams/{team_id}/members")
 async def configure_team(team_id: str, body: TeamMembersBody):
-    """
-    Set the expected members for a team.
-    Used to track who hasn't posted their standup update yet.
-    """
+    """Set the expected members for a team (for missing-member tracking)."""
     await set_team_members(app.state.db, team_id, body.members)
     return {"team_id": team_id, "members": body.members}
+
+
+@app.get("/teams/{team_id}/members")
+async def list_team_members(team_id: str):
+    """Get the configured member list for a team."""
+    members = await get_team_members(app.state.db, team_id)
+    return {"team_id": team_id, "members": members}
+
+
+@app.get("/teams/{team_id}/streak")
+async def team_streak(team_id: str):
+    """
+    Consecutive days the team has posted at least one standup update.
+    Useful for gamification and team health tracking.
+    """
+    return await get_streak(app.state.db, team_id)

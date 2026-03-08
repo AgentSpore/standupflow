@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 
 import aiosqlite
 
@@ -89,3 +89,39 @@ async def set_team_members(db: aiosqlite.Connection, team_id: str, members: list
             "INSERT OR IGNORE INTO team_members (team_id, member) VALUES (?,?)", (team_id, m)
         )
     await db.commit()
+
+
+async def get_team_members(db: aiosqlite.Connection, team_id: str) -> list[str]:
+    rows = await db.execute_fetchall(
+        "SELECT member FROM team_members WHERE team_id = ? ORDER BY member", (team_id,)
+    )
+    return [r["member"] for r in rows]
+
+
+async def get_streak(db: aiosqlite.Connection, team_id: str) -> dict:
+    """Calculate how many consecutive days the team has posted at least one update."""
+    rows = await db.execute_fetchall(
+        "SELECT DISTINCT DATE(created_at) as d FROM updates WHERE team_id = ? ORDER BY d DESC",
+        (team_id,),
+    )
+    dates = [r["d"] for r in rows]
+    if not dates:
+        return {"team_id": team_id, "streak_days": 0, "last_active": None}
+
+    streak = 1
+    today = date.today()
+    last = date.fromisoformat(dates[0])
+
+    # Allow today or yesterday as the start of streak
+    if (today - last).days > 1:
+        return {"team_id": team_id, "streak_days": 0, "last_active": dates[0]}
+
+    for i in range(1, len(dates)):
+        prev = date.fromisoformat(dates[i])
+        if (last - prev).days == 1:
+            streak += 1
+            last = prev
+        else:
+            break
+
+    return {"team_id": team_id, "streak_days": streak, "last_active": dates[0]}

@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from models import UpdateCreate, UpdateResponse, DigestResponse
 from engine import (
     init_db, post_update, list_updates, get_digest,
-    set_team_members, get_team_members, get_streak,
+    set_team_members, get_team_members, get_streak, get_member_stats,
 )
 
 DB_PATH = "standupflow.db"
@@ -29,7 +29,7 @@ app = FastAPI(
         "Each engineer posts: what they did, what's next, any blockers. "
         "Get a daily digest per team — no meetings required."
     ),
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -86,3 +86,13 @@ async def team_streak(team_id: str):
     Useful for gamification and team health tracking.
     """
     return await get_streak(app.state.db, team_id)
+
+
+@app.get("/teams/{team_id}/stats")
+async def member_participation_stats(team_id: str):
+    """
+    Per-member participation stats: total updates, days active, blocker count,
+    last active date, and participation % relative to team history.
+    Also shows who posted today.
+    """
+    return await get_member_stats(app.state.db, team_id)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone, date
 
 import aiosqlite
 
@@ -82,6 +82,67 @@ async def get_digest(db: aiosqlite.Connection, team_id: str, for_date: str | Non
     }
 
 
+async def get_member_stats(db: aiosqlite.Connection, team_id: str) -> dict:
+    """Per-member participation stats + team-wide summary."""
+    all_members = await get_team_members(db, team_id)
+
+    member_rows = await db.execute_fetchall(
+        """SELECT author,
+                  COUNT(*) as total_updates,
+                  COUNT(DISTINCT DATE(created_at)) as days_active,
+                  SUM(CASE WHEN blockers IS NOT NULL THEN 1 ELSE 0 END) as blocker_count,
+                  MAX(DATE(created_at)) as last_active
+           FROM updates WHERE team_id = ?
+           GROUP BY author""",
+        (team_id,),
+    )
+    stats_by_member = {r["author"]: dict(r) for r in member_rows}
+
+    # Oldest update date to compute team-active days range
+    range_rows = await db.execute_fetchall(
+        "SELECT MIN(DATE(created_at)) as first_day, MAX(DATE(created_at)) as last_day FROM updates WHERE team_id = ?",
+        (team_id,),
+    )
+    first_day = range_rows[0]["first_day"]
+    last_day = range_rows[0]["last_day"]
+    if first_day and last_day:
+        total_days = (date.fromisoformat(last_day) - date.fromisoformat(first_day)).days + 1
+    else:
+        total_days = 0
+
+    members_detail = []
+    for m in all_members or list(stats_by_member.keys()):
+        s = stats_by_member.get(m, {})
+        days_active = s.get("days_active", 0)
+        participation_pct = round(days_active / total_days * 100, 1) if total_days else 0.0
+        members_detail.append({
+            "member": m,
+            "total_updates": s.get("total_updates", 0),
+            "days_active": days_active,
+            "blocker_count": s.get("blocker_count", 0),
+            "last_active": s.get("last_active"),
+            "participation_pct": participation_pct,
+        })
+
+    members_detail.sort(key=lambda x: x["total_updates"], reverse=True)
+
+    today = date.today().isoformat()
+    posted_today_rows = await db.execute_fetchall(
+        "SELECT DISTINCT author FROM updates WHERE team_id = ? AND DATE(created_at) = ?",
+        (team_id, today),
+    )
+    posted_today = [r["author"] for r in posted_today_rows]
+
+    return {
+        "team_id": team_id,
+        "team_size": len(all_members) or len(stats_by_member),
+        "total_days_tracked": total_days,
+        "posted_today": posted_today,
+        "posted_today_count": len(posted_today),
+        "members": members_detail,
+    }
+
+
 async def set_team_members(db: aiosqlite.Connection, team_id: str, members: list[str]) -> None:
     await db.execute("DELETE FROM team_members WHERE team_id = ?", (team_id,))
     for m in members:
@@ -99,7 +160,6 @@ async def get_team_members(db: aiosqlite.Connection, team_id: str) -> list[str]:
 
 
 async def get_streak(db: aiosqlite.Connection, team_id: str) -> dict:
-    """Calculate how many consecutive days the team has posted at least one update."""
     rows = await db.execute_fetchall(
         "SELECT DISTINCT DATE(created_at) as d FROM updates WHERE team_id = ? ORDER BY d DESC",
         (team_id,),
@@ -112,7 +172,6 @@ async def get_streak(db: aiosqlite.Connection, team_id: str) -> dict:
     today = date.today()
     last = date.fromisoformat(dates[0])
 
-    # Allow today or yesterday as the start of streak
     if (today - last).days > 1:
         return {"team_id": team_id, "streak_days": 0, "last_active": dates[0]}
 

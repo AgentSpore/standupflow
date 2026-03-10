@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime, timezone, date
 
 import aiosqlite
@@ -83,7 +85,6 @@ async def get_digest(db: aiosqlite.Connection, team_id: str, for_date: str | Non
 
 
 async def get_member_stats(db: aiosqlite.Connection, team_id: str) -> dict:
-    """Per-member participation stats + team-wide summary."""
     all_members = await get_team_members(db, team_id)
 
     member_rows = await db.execute_fetchall(
@@ -98,7 +99,6 @@ async def get_member_stats(db: aiosqlite.Connection, team_id: str) -> dict:
     )
     stats_by_member = {r["author"]: dict(r) for r in member_rows}
 
-    # Oldest update date to compute team-active days range
     range_rows = await db.execute_fetchall(
         "SELECT MIN(DATE(created_at)) as first_day, MAX(DATE(created_at)) as last_day FROM updates WHERE team_id = ?",
         (team_id,),
@@ -184,3 +184,52 @@ async def get_streak(db: aiosqlite.Connection, team_id: str) -> dict:
             break
 
     return {"team_id": team_id, "streak_days": streak, "last_active": dates[0]}
+
+
+async def list_blockers(
+    db: aiosqlite.Connection,
+    team_id: str,
+    since: str | None = None,
+    until: str | None = None,
+    author: str | None = None,
+) -> list[dict]:
+    """Return all updates with non-null blockers, optionally filtered by date range and author."""
+    conditions = ["team_id = ?", "blockers IS NOT NULL"]
+    params: list = [team_id]
+    if since:
+        conditions.append("DATE(created_at) >= ?")
+        params.append(since)
+    if until:
+        conditions.append("DATE(created_at) <= ?")
+        params.append(until)
+    if author:
+        conditions.append("author = ?")
+        params.append(author)
+    sql = f"SELECT * FROM updates WHERE {' AND '.join(conditions)} ORDER BY created_at DESC"
+    rows = await db.execute_fetchall(sql, params)
+    return [_row(r) for r in rows]
+
+
+async def export_updates_csv(
+    db: aiosqlite.Connection,
+    team_id: str,
+    since: str | None = None,
+    until: str | None = None,
+) -> str:
+    """Export team updates as CSV, optionally filtered by date range."""
+    conditions = ["team_id = ?"]
+    params: list = [team_id]
+    if since:
+        conditions.append("DATE(created_at) >= ?")
+        params.append(since)
+    if until:
+        conditions.append("DATE(created_at) <= ?")
+        params.append(until)
+    sql = f"SELECT * FROM updates WHERE {' AND '.join(conditions)} ORDER BY created_at DESC"
+    rows = await db.execute_fetchall(sql, params)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["id", "team_id", "author", "did", "next", "blockers", "created_at"])
+    for r in rows:
+        writer.writerow([r["id"], r["team_id"], r["author"], r["did"], r["next"], r["blockers"], r["created_at"]])
+    return buf.getvalue()

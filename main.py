@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from models import UpdateCreate, UpdateResponse, DigestResponse
+from models import UpdateCreate, UpdateResponse, DigestResponse, SprintSummary
 from engine import (
     init_db, post_update, list_updates, get_digest,
     set_team_members, get_team_members, get_streak, get_member_stats,
-    list_blockers, export_updates_csv,
+    list_blockers, export_updates_csv, get_sprint_summary,
 )
 
 DB_PATH = "standupflow.db"
@@ -29,9 +30,9 @@ app = FastAPI(
         "Async standup tracker for engineering teams. "
         "Replace daily sync calls with structured async updates. "
         "Each engineer posts: what they did, what's next, any blockers. "
-        "Get a daily digest per team — no meetings required."
+        "Get daily digests, sprint summaries, and team health scores."
     ),
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -107,3 +108,15 @@ async def export_updates(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=standupflow_{team_id}.csv"},
     )
+
+
+@app.get("/teams/{team_id}/sprint-summary", response_model=SprintSummary)
+async def sprint_summary(
+    team_id: str,
+    since: str | None = Query(None, description="Sprint start date ISO (default: 7 days ago)"),
+    until: str | None = Query(None, description="Sprint end date ISO (default: today)"),
+):
+    """Aggregated sprint report: per-member velocity, daily activity trend, top blockers, health score (0-100)."""
+    end = until or date.today().isoformat()
+    start = since or (date.fromisoformat(end) - timedelta(days=6)).isoformat()
+    return await get_sprint_summary(app.state.db, team_id, start, end)

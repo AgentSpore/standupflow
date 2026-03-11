@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import defaultdict
 from datetime import datetime, timezone, date
 
 import aiosqlite
@@ -193,7 +194,6 @@ async def list_blockers(
     until: str | None = None,
     author: str | None = None,
 ) -> list[dict]:
-    """Return all updates with non-null blockers, optionally filtered by date range and author."""
     conditions = ["team_id = ?", "blockers IS NOT NULL"]
     params: list = [team_id]
     if since:
@@ -216,7 +216,6 @@ async def export_updates_csv(
     since: str | None = None,
     until: str | None = None,
 ) -> str:
-    """Export team updates as CSV, optionally filtered by date range."""
     conditions = ["team_id = ?"]
     params: list = [team_id]
     if since:
@@ -233,3 +232,99 @@ async def export_updates_csv(
     for r in rows:
         writer.writerow([r["id"], r["team_id"], r["author"], r["did"], r["next"], r["blockers"], r["created_at"]])
     return buf.getvalue()
+
+
+async def get_sprint_summary(
+    db: aiosqlite.Connection,
+    team_id: str,
+    since: str,
+    until: str,
+) -> dict:
+    """Aggregated sprint summary with per-member velocity, daily trend, and top blockers."""
+    all_members = await get_team_members(db, team_id)
+    team_size = len(all_members) if all_members else 0
+
+    rows = await db.execute_fetchall(
+        "SELECT * FROM updates WHERE team_id = ? AND DATE(created_at) >= ? AND DATE(created_at) <= ? ORDER BY created_at ASC",
+        (team_id, since, until),
+    )
+    updates = [_row(r) for r in rows]
+
+    # Per-member aggregation
+    member_data = defaultdict(lambda: {"count": 0, "blockers": 0, "dates": set()})
+    for u in updates:
+        m = member_data[u["author"]]
+        m["count"] += 1
+        m["dates"].add(u["created_at"][:10])
+        if u["blockers"]:
+            m["blockers"] += 1
+
+    members = []
+    for author, d in sorted(member_data.items(), key=lambda x: x[1]["count"], reverse=True):
+        members.append({
+            "member": author,
+            "updates_count": d["count"],
+            "days_active": len(d["dates"]),
+            "blockers_raised": d["blockers"],
+            "active_dates": sorted(d["dates"]),
+        })
+
+    # Daily activity trend
+    daily = defaultdict(lambda: {"count": 0, "authors": set()})
+    for u in updates:
+        d = u["created_at"][:10]
+        daily[d]["count"] += 1
+        daily[d]["authors"].add(u["author"])
+
+    daily_activity = []
+    for d in sorted(daily.keys()):
+        daily_activity.append({
+            "date": d,
+            "update_count": daily[d]["count"],
+            "authors": sorted(daily[d]["authors"]),
+        })
+
+    # Top blockers
+    top_blockers = []
+    for u in updates:
+        if u["blockers"]:
+            top_blockers.append({
+                "author": u["author"],
+                "blocker": u["blockers"],
+                "date": u["created_at"][:10],
+            })
+
+    # Participation rate: unique contributors / team size
+    unique_contributors = len(member_data)
+    effective_team = max(team_size, unique_contributors)
+    participation_rate = round(unique_contributors / effective_team * 100, 1) if effective_team else 0.0
+
+    # Health score (0-100)
+    # Factors: participation rate (40%), avg updates per active day (30%), blocker ratio low (30%)
+    sprint_days = len(daily_activity)
+    avg_updates_per_day = len(updates) / sprint_days if sprint_days else 0
+    expected_daily = effective_team  # ideally 1 update per member per day
+    update_score = min(avg_updates_per_day / expected_daily, 1.0) if expected_daily else 0
+    blocker_ratio = len(top_blockers) / len(updates) if updates else 0
+    blocker_score = max(1.0 - blocker_ratio, 0)
+
+    health_score = int(
+        (participation_rate / 100) * 40
+        + update_score * 30
+        + blocker_score * 30
+    )
+    health_score = max(0, min(100, health_score))
+
+    return {
+        "team_id": team_id,
+        "since": since,
+        "until": until,
+        "total_updates": len(updates),
+        "unique_contributors": unique_contributors,
+        "team_size": effective_team,
+        "participation_rate_pct": participation_rate,
+        "health_score": health_score,
+        "members": members,
+        "daily_activity": daily_activity,
+        "top_blockers": top_blockers,
+    }

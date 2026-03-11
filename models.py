@@ -27,3 +27,37 @@ class DigestResponse(BaseModel):
     blockers_summary: list[str]
     authors_missing: list[str]
     total_updates: int
+
+
+class BlockerEntry(BaseModel):
+    author: str
+    blocker: str
+    date: str
+
+
+class MemberSprint(BaseModel):
+    member: str
+    updates_count: int
+    days_active: int
+    blockers_raised: int
+    active_dates: list[str]
+
+
+class DailyActivity(BaseModel):
+    date: str
+    update_count: int
+    authors: list[str]
+
+
+class SprintSummary(BaseModel):
+    team_id: str
+    since: str
+    until: str
+    total_updates: int
+    unique_contributors: int
+    team_size: int
+    participation_rate_pct: float
+    health_score: int
+    members: list[MemberSprint]
+    daily_activity: list[DailyActivity]
+    top_blockers: list[BlockerEntry]
